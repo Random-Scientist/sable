@@ -4,13 +4,33 @@ plugins {
     id 'multiloader-common'
     id 'net.neoforged.moddev'
 }
-
+def pinnedRustVersion = 'nightly-2026-01-29'
+def mac(arch) {
+    [triple: "${arch}-apple-darwin", arch: arch, os: "macos", ext: "dylib", lib: true]
+}
+def linux(arch) {
+    [triple: "${arch}-unknown-linux-gnu", arch: arch, os: "linux", ext: "so", lib: true]
+}
+def windows(arch) {
+    [triple: "${arch}-pc-windows-msvc", arch: arch, os: "windows", ext: "dll", lib: false]
+}
+def supportedTargets = [
+    mac("x86_64"),
+    mac("aarch64"),
+    linux("x86_64"),
+    linux("aarch64"),
+    windows("x86_64"),
+    windows("aarch64")
+]
 def rustRootDir = file("src/main/rust")
 def rustProjectDir = file("$rustRootDir/rapier")
 def nativesDir = file("src/main/resources/natives/sable_rapier")
 def cargoCacheDir = project.layout.buildDirectory.file("cargo").get().asFile
 def docker = Os.isFamily(Os.FAMILY_MAC) ? "/usr/local/bin/docker" : "docker"
-def dockerCommand = [
+def xWinImage = 'sable-build-xwin'
+def zigbuildImage = 'sable-build-zigbuild'
+
+def baseDockerCommand = [
         docker,
         'run',
         '--rm',
@@ -22,8 +42,9 @@ def dockerCommand = [
         "$cargoCacheDir/registry:/usr/local/cargo/registry",
         '-w',
         '/io/rapier',
-        'sable-build'
 ]
+def zigbuildCargo = [baseDockerCommand, zigbuildImage, 'cargo'].flatten()
+def xWinCargo = [baseDockerCommand, xWinImage, 'cargo'].flatten()
 
 tasks.register('createContainersDirectory') {
     doLast {
@@ -33,26 +54,37 @@ tasks.register('createContainersDirectory') {
     }
 }
 
-tasks.register('buildImage', Exec) {
+tasks.register('buildImages') {
+    group = 'rust'
+    dependsOn buildZigbuildImage, buildXWinImage
+}
+
+tasks.register('buildZigbuildImage', Exec) {
     group = 'rust'
     workingDir rustRootDir
-    commandLine docker, 'build', '-t', 'sable-build', '.'
+    commandLine docker, 'build', '-t', zigbuildImage, 'container/zigbuild', '--build-arg', "RUST_VERSION=${pinnedRustVersion}"
+    dependsOn createContainersDirectory
+}
+tasks.register('buildXWinImage', Exec) {
+    group = 'rust'
+    workingDir rustRootDir
+    commandLine docker, 'build', '-t', xWinImage, 'container/xwin', '--build-arg', "RUST_VERSION=${pinnedRustVersion}"
     dependsOn createContainersDirectory
 }
 
 tasks.register('cleanRust', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'clean'
+    commandLine zigbuildCargo
+    args 'clean'
     dependsOn createContainersDirectory
 }
 
-tasks.register('compileRust', Exec) {
+tasks.register('compileRustDev', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild'
+    commandLine zigbuildCargo
+    args 'zigbuild'
     dependsOn createContainersDirectory
     finalizedBy copyRustNativesDev
 }
@@ -60,40 +92,47 @@ tasks.register('compileRust', Exec) {
 tasks.register('compileRustMacAArch64', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild', '--release', '--target', 'aarch64-apple-darwin'
+    commandLine zigbuildCargo
+    args 'zigbuild', '--release', '--target', 'aarch64-apple-darwin'
     dependsOn createContainersDirectory
 }
 
-tasks.register('compileRustMacX86', Exec) {
+tasks.register('compileRustMacX86_64', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild', '--release', '--target', 'x86_64-apple-darwin'
+    commandLine zigbuildCargo
+    args 'zigbuild', '--release', '--target', 'x86_64-apple-darwin'
     dependsOn createContainersDirectory
 }
 
 tasks.register('compileRustLinuxAArch64', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild', '--release', '--target', 'aarch64-unknown-linux-gnu.2.17'
+    commandLine zigbuildCargo
+    args 'zigbuild', '--release', '--target', 'aarch64-unknown-linux-gnu.2.17'
     dependsOn createContainersDirectory
 }
 
-tasks.register('compileRustLinux', Exec) {
+tasks.register('compileRustLinuxX86_64', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild', '--release', '--target', 'x86_64-unknown-linux-gnu.2.17'
+    commandLine zigbuildCargo
+    args 'zigbuild', '--release', '--target', 'x86_64-unknown-linux-gnu.2.17'
     dependsOn createContainersDirectory
 }
 
-tasks.register('compileRustWindows', Exec) {
+tasks.register('compileRustWindowsX86_64', Exec) {
     group = 'rust'
     workingDir rustProjectDir
-    commandLine dockerCommand
-    args 'cargo', 'zigbuild', '--release', '--target', 'x86_64-pc-windows-gnu'
+    commandLine xWinCargo
+    args 'xwin', 'build', '--release', '--target', 'x86_64-pc-windows-msvc'
+    dependsOn createContainersDirectory
+}
+tasks.register('compileRustWindowsAArch64', Exec) {
+    group = 'rust'
+    workingDir rustProjectDir
+    commandLine xWinCargo
+    args 'xwin', 'build', '--release', '--target', 'aarch64-pc-windows-msvc'
     dependsOn createContainersDirectory
 }
 
@@ -101,7 +140,7 @@ tasks.register('buildRustNatives') {
     group = 'build'
     description = 'Compiles all Rust natives and moves them to resources.'
 
-    dependsOn compileRustMacAArch64, compileRustMacX86, compileRustLinux, compileRustLinuxAArch64, compileRustWindows
+    dependsOn compileRustMacAArch64, compileRustMacX86_64, compileRustLinuxX86_64, compileRustLinuxAArch64, compileRustWindowsX86_64, compileRustWindowsAArch64
     finalizedBy copyRustNatives
 }
 
@@ -111,19 +150,12 @@ tasks.register('copyRustNatives', Copy) {
     into nativesDir
     mustRunAfter(buildRustNatives)
 
-    def moves = [
-            [src: "target/aarch64-apple-darwin/release/libsable_rapier.dylib", dest: "sable_rapier_aarch64_macos.dylib"],
-            [src: "target/x86_64-apple-darwin/release/libsable_rapier.dylib", dest: "sable_rapier_x86_64_macos.dylib"],
-            [src: "target/x86_64-unknown-linux-gnu/release/libsable_rapier.so", dest: "sable_rapier_x86_64_linux.so"],
-            [src: "target/aarch64-unknown-linux-gnu/release/libsable_rapier.so", dest: "sable_rapier_aarch64_linux.so"],
-            [src: "target/x86_64-pc-windows-gnu/release/sable_rapier.dll", dest: "sable_rapier_x86_64_windows.dll"]
-    ]
-
-    moves.forEach { map ->
-        from(file("$rustRootDir/${map.src}")) {
-            rename { map.dest }
+    supportedTargets.forEach { map ->
+        from(file("$rustRootDir/target/${map.triple}/release/${ if(map.lib) {"lib"} else {""}}sable_rapier.${map.ext}")) {
+            rename { "sable_rapier_${map.arch}_${map.os}.${map.ext}" }
         }
     }
+
 }
 
 tasks.register('copyRustNativesDev', Copy) {
@@ -132,17 +164,9 @@ tasks.register('copyRustNativesDev', Copy) {
     into nativesDir
     mustRunAfter(compileRust)
 
-    def moves = [
-            [src: "target/debug/libsable_rapier.dylib", dest: "sable_rapier_aarch64_macos.dylib"],
-            [src: "target/debug/libsable_rapier.dylib", dest: "sable_rapier_x86_64_macos.dylib"],
-            [src: "target/debug/libsable_rapier.so", dest: "sable_rapier_aarch64_linux.so"],
-            [src: "target/debug/libsable_rapier.so", dest: "sable_rapier_x86_64_linux.so"],
-            [src: "target/debug/sable_rapier.dll", dest: "sable_rapier_aarch64_windows.dll"],
-            [src: "target/debug/sable_rapier.dll", dest: "sable_rapier_x86_64_windows.dll"]
-    ]
-    moves.forEach { map ->
-        from(file("$rustRootDir/${map.src}")) {
-            rename { map.dest }
+    supportedTargets.forEach { map ->
+        from(file("$rustRootDir/target/debug/${ if(map.lib) {"lib"} else {""}}sable_rapier.${map.ext}")) {
+            rename { "sable_rapier_${map.arch}_${map.os}.${map.ext}" }
         }
     }
 }
