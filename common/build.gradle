@@ -1,5 +1,15 @@
 import org.apache.tools.ant.taskdefs.condition.Os
 
+import org.tukaani.xz.LZMA2Options
+import org.tukaani.xz.XZOutputStream
+
+import java.nio.file.Files
+buildscript {
+    dependencies {
+        classpath 'org.tukaani:xz:1.10'
+    }
+}
+
 plugins {
     id 'multiloader-common'
     id 'net.neoforged.moddev'
@@ -87,9 +97,11 @@ tasks.register('cleanRust', Exec) {
     args 'clean'
     dependsOn createContainersDirectory
 }
+
 def compileRustTaskName = { target ->
     "compileRust-${target.os}-${target.arch}"
 }
+
 def commandLineForTarget(target) {
     if(target.triple.contains('msvc')) {
         [project.ext.xWinCargo, 'xwin', 'build', '--release', '--target', target.triple].flatten()
@@ -101,11 +113,14 @@ def commandLineForTarget(target) {
     }
 
 }
-supportedTargets.forEach() { target ->
+def nativesNameForTarget(target) {
+    "sable_rapier_${target.arch}_${target.os}.${target.ext}"
+}
+supportedTargets.forEach { target ->
     tasks.register(compileRustTaskName(target), Exec) {
         group = 'rust'
         workingDir rustProjectDir
-        description = "Cross-compiles natives for the ${target.triple} target"    
+        description = "Cross-compiles natives for the ${target.triple} target"
         commandLine = commandLineForTarget(target)
     }
 }
@@ -120,27 +135,46 @@ tasks.register('buildRustNatives') {
 
 tasks.register('copyRustNatives', Copy) {
     group = 'rust'
-
     into nativesDir
     mustRunAfter(buildRustNatives)
 
-    supportedTargets.forEach { map ->
-        from(file("$rustRootDir/target/${map.triple}/release/${ if(map.lib) {"lib"} else {""}}sable_rapier.${map.ext}")) {
-            rename { "sable_rapier_${map.arch}_${map.os}.${map.ext}" }
+    supportedTargets.forEach { target ->
+        from(file("$rustRootDir/target/${target.triple}/release/${ if(target.lib) {"lib"} else {""}}sable_rapier.${target.ext}")) {
+            rename { nativesNameForTarget(target) }
         }
     }
-
+    finalizedBy packRustNatives
 }
 
 tasks.register('copyRustNativesDev', Copy) {
     group = 'rust'
-
     into nativesDir
 
-    supportedTargets.forEach { map ->
-        from(file("$rustRootDir/target/debug/${ if(map.lib) {"lib"} else {""}}sable_rapier.${map.ext}")) {
-            rename { "sable_rapier_${map.arch}_${map.os}.${map.ext}" }
+    supportedTargets.forEach { target ->
+        from(file("$rustRootDir/target/debug/${ if(target.lib) {"lib"} else {""}}sable_rapier.${target.ext}")) {
+            rename { nativesNameForTarget(target) }
         }
+    }
+    finalizedBy packRustNatives
+}
+tasks.register('packRustNatives', Tar) {
+    group = 'rust'
+    archiveFile.set file("${nativesDir}/sable_rapier_binaries.tar.xz")
+    into nativesDir
+
+    mustRunAfter copyRustNatives, copyRustNativesDev
+    supportedTargets.forEach { target ->
+        var f = nativesNameForTarget(target);
+        // No, you can't use rename here in case you were wondering.
+        from(file("${nativesDir}/${f}")) { eachFile { setPath f } }
+    }
+    doLast {
+        byte[] bytes = Files.readAllBytes(getArchiveFile().get().asFile.toPath());
+        try (var f = new FileOutputStream(getArchiveFile().get().asFile))  {
+            try (var x = new XZOutputStream(f, new LZMA2Options(LZMA2Options.PRESET_MAX))) {
+                x.write(bytes);
+            }
+        };
     }
 }
 
@@ -166,6 +200,11 @@ configurations {
         canBeResolved = false
         canBeConsumed = true
     }
+}
+jar {
+    exclude "**/*.so"
+    exclude "**/*.dylib"
+    exclude "**/*.dll"
 }
 
 artifacts {
