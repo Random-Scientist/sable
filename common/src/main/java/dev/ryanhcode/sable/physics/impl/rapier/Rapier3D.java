@@ -65,25 +65,22 @@ public class Rapier3D {
             if (is == null) {
                 throw new FileNotFoundException("sable_rapier_binaries.tar.xz");
             }
-            try (final XZInputStream is2 = new XZInputStream(is); final var ti = new TarArchiveInputStream(is2)) {
+            try (final XZInputStream is2 = new XZInputStream(is);
+                 final TarArchiveInputStream ti = new TarArchiveInputStream(is2)) {
 
-                boolean found = false;
                 TarArchiveEntry entry;
                 while ((entry = ti.getNextEntry()) != null) {
                     if (entry.getName().equals(nativeName)) {
-                        String[] split = nativeName.split("\\.");
+                        final String[] split = nativeName.split("\\.");
                         final Path tempFile = Files.createTempFile(split[0], "." + split[1]);
                         Files.copy(ti, tempFile, StandardCopyOption.REPLACE_EXISTING);
                         System.load(tempFile.toAbsolutePath().toString());
-                        found = true;
+                        ENABLED = true;
+                        return;
                     }
                 }
 
-                if (!found) {
-                    throw new FileNotFoundException(nativeName);
-                }
-
-                ENABLED = true;
+                throw new FileNotFoundException(nativeName);
             }
         } catch (final Throwable t) {
             ENABLED = false;
